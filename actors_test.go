@@ -14,9 +14,9 @@ import (
 )
 
 const (
-	NUMBER_OF_ITEMS  = 1024
+	NUMBER_OF_ITEMS  = 16384
 	NUMBER_OF_ACTORS = 8
-	QUEUE_SIZE       = 2
+	QUEUE_SIZE       = 128
 	MSG_WITH_WAIT    = 0
 	MSG_WITHOUT_WAIT = 1
 	WAIT_DURATION    = 5 * time.Millisecond
@@ -85,6 +85,7 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 	for n := 0; n < b.N; n++ {
 		var sendSync sync.WaitGroup
 		var i int64
+		counter = 0
 		for i = 0; i < NUMBER_OF_ITEMS; i++ {
 			sendSync.Add(1)
 			go func() {
@@ -107,7 +108,7 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 		engine.Poison(actors[i], &actorWg)
 	}
 	actorWg.Wait()
-	// fmt.Println("counter_hollywood: ", counter)
+	// b.Log("counter_hollywood: ", counter)
 }
 
 func BenchmarkHollywoodWithWait(b *testing.B) {
@@ -125,6 +126,7 @@ func benchmarkChannels(b *testing.B, withWait bool) {
 	for i := 0; i < NUMBER_OF_ACTORS; i++ {
 		actors[i] = newChannelActor(channelActorFunc, i, QUEUE_SIZE, &wg)
 	}
+	counter = 0
 	for n := 0; n < b.N; n++ {
 		var sendSync sync.WaitGroup
 		var i int64
@@ -149,15 +151,15 @@ func benchmarkChannels(b *testing.B, withWait bool) {
 		close(actors[i])
 	}
 	wg.Wait()
-	// fmt.Println("counter_channels: ", counter)
+	// b.Log("counter_channels: ", counter)
 }
 
 func BenchmarkChannelsWithWait(b *testing.B) {
-	benchmarkHollywood(b, true)
+	benchmarkChannels(b, true)
 }
 
 func BenchmarkChannelsWithoutWait(b *testing.B) {
-	benchmarkHollywood(b, false)
+	benchmarkChannels(b, false)
 }
 
 func newChannelActor(f func(ch <-chan interface{}, pid int, wg *sync.WaitGroup), pid int, queueSize int, wg *sync.WaitGroup) chan<- interface{} {
