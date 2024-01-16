@@ -1,8 +1,9 @@
-package agent
+package main
 
 import (
 	"fmt"
-	"hash/fnv"
+	"hash"
+	"hash/crc32"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -79,38 +80,29 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	actors := make([]*actor.PID, NUMBER_OF_ACTORS)
-	for i := 0; i < NUMBER_OF_ACTORS; i++ {
-		actors[i] = engine.Spawn(newHollywoodActor, "test_actor", actor.WithInboxSize(QUEUE_SIZE), actor.WithID(strconv.Itoa(i)))
-	}
-	counter = 0
 	for n := 0; n < b.N; n++ {
-		var sendSync sync.WaitGroup
-		var i int64
 		counter = 0
-		for i = 0; i < NUMBER_OF_ITEMS; i++ {
-			sendSync.Add(1)
-			go func() {
-				defer sendSync.Done()
-				uuid := uuid.New().String()
-				hash := fnv.New32a()
-				hash.Write([]byte(uuid))
-				actorIndex := int(hash.Sum32()) % NUMBER_OF_ACTORS
-				if withWait {
-					engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)})
-				} else {
-					engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)})
-				}
-			}()
+		actors := make([]*actor.PID, NUMBER_OF_ACTORS)
+		for i := 0; i < NUMBER_OF_ACTORS; i++ {
+			actors[i] = engine.Spawn(newHollywoodActor, "test_actor", actor.WithInboxSize(QUEUE_SIZE), actor.WithID(strconv.Itoa(i)))
 		}
-		sendSync.Wait()
+		for i := 0; i < NUMBER_OF_ITEMS; i++ {
+			uuid := uuid.New().String()
+			actorIndex := consistentHashCRC32(uuid, NUMBER_OF_ACTORS)
+			if withWait {
+				engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)})
+			} else {
+				engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)})
+			}
+		}
+
+		var actorWg sync.WaitGroup
+		for i := 0; i < NUMBER_OF_ACTORS; i++ {
+			engine.Poison(actors[i], &actorWg)
+		}
+		actorWg.Wait()
+		// b.Log("counter_hollywood: ", counter)
 	}
-	var actorWg sync.WaitGroup
-	for i := 0; i < NUMBER_OF_ACTORS; i++ {
-		engine.Poison(actors[i], &actorWg)
-	}
-	actorWg.Wait()
-	// b.Log("counter_hollywood: ", counter)
 }
 
 func BenchmarkHollywoodWithWait(b *testing.B) {
@@ -122,38 +114,28 @@ func BenchmarkHollywoodWithoutWait(b *testing.B) {
 }
 
 func benchmarkChannels(b *testing.B, withWait bool) {
-	counter = 0
-	var wg sync.WaitGroup
-	actors := make([]chan<- interface{}, NUMBER_OF_ACTORS)
-	for i := 0; i < NUMBER_OF_ACTORS; i++ {
-		actors[i] = newChannelActor(channelActorFunc, i, QUEUE_SIZE, &wg)
-	}
-	counter = 0
 	for n := 0; n < b.N; n++ {
-		var sendSync sync.WaitGroup
-		var i int64
-		for i = 0; i < NUMBER_OF_ITEMS; i++ {
-			sendSync.Add(1)
-			go func() {
-				defer sendSync.Done()
-				uuid := uuid.New().String()
-				hash := fnv.New32a()
-				hash.Write([]byte(uuid))
-				actorIndex := int(hash.Sum32()) % NUMBER_OF_ACTORS
-				if withWait {
-					actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)}
-				} else {
-					actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)}
-				}
-			}()
+		counter = 0
+		var wg sync.WaitGroup
+		actors := make([]chan<- interface{}, NUMBER_OF_ACTORS)
+		for i := 0; i < NUMBER_OF_ACTORS; i++ {
+			actors[i] = newChannelActor(channelActorFunc, i, QUEUE_SIZE, &wg)
 		}
-		sendSync.Wait()
+		for i := 0; i < NUMBER_OF_ITEMS; i++ {
+			uuid := uuid.New().String()
+			actorIndex := consistentHashCRC32(uuid, NUMBER_OF_ACTORS)
+			if withWait {
+				actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)}
+			} else {
+				actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)}
+			}
+		}
+		for i := 0; i < NUMBER_OF_ACTORS; i++ {
+			close(actors[i])
+		}
+		wg.Wait()
+		// b.Log("counter_channels: ", counter)
 	}
-	for i := 0; i < NUMBER_OF_ACTORS; i++ {
-		close(actors[i])
-	}
-	wg.Wait()
-	// b.Log("counter_channels: ", counter)
 }
 
 func BenchmarkChannelsWithWait(b *testing.B) {
@@ -169,4 +151,19 @@ func newChannelActor(f func(ch <-chan interface{}, pid int, wg *sync.WaitGroup),
 	wg.Add(1)
 	go f(ch, pid, wg)
 	return ch
+}
+
+var hasherPool = &sync.Pool{
+	New: func() interface{} {
+		return crc32.NewIEEE()
+	},
+}
+
+func consistentHashCRC32(key string, bucketCount int) int {
+	hasher := hasherPool.Get().(hash.Hash32)
+	defer hasherPool.Put(hasher)
+	hasher.Reset()
+	hasher.Write([]byte(key))
+	hash := hasher.Sum32()
+	return int(hash) % bucketCount
 }
