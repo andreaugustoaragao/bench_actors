@@ -19,7 +19,7 @@ const (
 	QUEUE_SIZE       = 128
 	MSG_WITH_WAIT    = 0
 	MSG_WITHOUT_WAIT = 1
-	WAIT_DURATION    = 5 * time.Millisecond
+	WAIT_DURATION    = 5 * time.Microsecond
 )
 
 var counter int64
@@ -43,29 +43,31 @@ func (h *HollywoodActor) Receive(ctx *actor.Context) {
 		atomic.AddInt64(&counter, msg.data)
 		h.processedMsgs++
 	case actor.Stopped:
-		fmt.Printf("actor %s stopped, processed: %d \n", ctx.PID().ID, h.processedMsgs)
+		// fmt.Printf("actor %s stopped, processed: %d \n", ctx.PID().ID, h.processedMsgs)
 	}
 }
 
 func channelActorFunc(ch <-chan interface{}, pid int, wg *sync.WaitGroup) {
 	defer wg.Done()
-	defer func() { // this is here for higher fidelity, I don't think it makes any noticeable difference
-		if r := recover(); r != nil {
-			fmt.Println("recovered: ", r)
-		}
-	}()
 	var msgProcessed int
 	for v := range ch {
 		msg, ok := v.(*Message)
 		if ok {
-			if msg.kind == MSG_WITH_WAIT {
-				time.Sleep(WAIT_DURATION)
-			}
-			atomic.AddInt64(&counter, msg.data)
-			msgProcessed++
+			func() {
+				defer func() { // this is here for higher fidelity, I don't think it makes any noticeable difference
+					if r := recover(); r != nil {
+						fmt.Println("recovered: ", r)
+					}
+				}()
+				if msg.kind == MSG_WITH_WAIT {
+					time.Sleep(WAIT_DURATION)
+				}
+				atomic.AddInt64(&counter, msg.data)
+				msgProcessed++
+			}()
 		}
 	}
-	// fmt.Println("actor stopped, processed: ", msgProcessed)
+	fmt.Printf("actor %d stopped, processed: %d\n", pid, msgProcessed)
 }
 
 func newHollywoodActor() actor.Receiver {
