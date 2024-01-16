@@ -14,9 +14,12 @@ import (
 )
 
 const (
-	NUMBER_OF_ITEMS  = 8192
+	NUMBER_OF_ITEMS  = 1024
 	NUMBER_OF_ACTORS = 8
 	QUEUE_SIZE       = 2
+	MSG_WITH_WAIT    = 0
+	MSG_WITHOUT_WAIT = 1
+	WAIT_DURATION    = 5 * time.Millisecond
 )
 
 var counter int64
@@ -34,12 +37,11 @@ type HollywoodActor struct {
 func (h *HollywoodActor) Receive(ctx *actor.Context) {
 	switch msg := ctx.Message().(type) {
 	case *Message:
-		switch msg.kind {
-		case 0:
-			time.Sleep(1 * time.Millisecond)
-			atomic.AddInt64(&counter, msg.data)
-			h.processedMsgs++
+		if msg.kind == MSG_WITH_WAIT {
+			time.Sleep(WAIT_DURATION)
 		}
+		atomic.AddInt64(&counter, msg.data)
+		h.processedMsgs++
 	case actor.Stopped:
 		// fmt.Println("actor stopped, processed: ", h.processedMsgs)
 	}
@@ -56,12 +58,11 @@ func channelActorFunc(ch <-chan interface{}, pid int, wg *sync.WaitGroup) {
 	for v := range ch {
 		msg, ok := v.(*Message)
 		if ok {
-			switch msg.kind {
-			case 0:
-				time.Sleep(1 * time.Millisecond)
-				atomic.AddInt64(&counter, msg.data)
-				msgProcessed++
+			if msg.kind == MSG_WITH_WAIT {
+				time.Sleep(WAIT_DURATION)
 			}
+			atomic.AddInt64(&counter, msg.data)
+			msgProcessed++
 		}
 	}
 	// fmt.Println("actor stopped, processed: ", msgProcessed)
@@ -71,11 +72,10 @@ func newHollywoodActor() actor.Receiver {
 	return &HollywoodActor{}
 }
 
-func BenchmarkHollywood(b *testing.B) {
+func benchmarkHollywood(b *testing.B, withWait bool) {
 	engine, err := actor.NewEngine(actor.NewEngineConfig())
 	if err != nil {
-		fmt.Println(err)
-		return
+		b.Fatal(err)
 	}
 	actors := make([]*actor.PID, NUMBER_OF_ACTORS)
 	for i := 0; i < NUMBER_OF_ACTORS; i++ {
@@ -93,7 +93,11 @@ func BenchmarkHollywood(b *testing.B) {
 				hash := fnv.New32a()
 				hash.Write([]byte(uuid))
 				actorIndex := int(hash.Sum32()) % NUMBER_OF_ACTORS
-				engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: 0, data: int64(1)})
+				if withWait {
+					engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)})
+				} else {
+					engine.Send(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)})
+				}
 			}()
 		}
 		sendSync.Wait()
@@ -106,7 +110,15 @@ func BenchmarkHollywood(b *testing.B) {
 	// fmt.Println("counter_hollywood: ", counter)
 }
 
-func BenchmarkChannel(b *testing.B) {
+func BenchmarkHollywoodWithWait(b *testing.B) {
+	benchmarkHollywood(b, true)
+}
+
+func BenchmarkHollywoodWithoutWait(b *testing.B) {
+	benchmarkHollywood(b, false)
+}
+
+func benchmarkChannels(b *testing.B, withWait bool) {
 	counter = 0
 	var wg sync.WaitGroup
 	actors := make([]chan<- interface{}, NUMBER_OF_ACTORS)
@@ -124,7 +136,11 @@ func BenchmarkChannel(b *testing.B) {
 				hash := fnv.New32a()
 				hash.Write([]byte(uuid))
 				actorIndex := int(hash.Sum32()) % NUMBER_OF_ACTORS
-				actors[actorIndex] <- &Message{uuid: uuid, kind: 0, data: int64(1)}
+				if withWait {
+					actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITH_WAIT, data: int64(1)}
+				} else {
+					actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)}
+				}
 			}()
 		}
 		sendSync.Wait()
@@ -134,6 +150,14 @@ func BenchmarkChannel(b *testing.B) {
 	}
 	wg.Wait()
 	// fmt.Println("counter_channels: ", counter)
+}
+
+func BenchmarkChannelsWithWait(b *testing.B) {
+	benchmarkHollywood(b, true)
+}
+
+func BenchmarkChannelsWithoutWait(b *testing.B) {
+	benchmarkHollywood(b, false)
 }
 
 func newChannelActor(f func(ch <-chan interface{}, pid int, wg *sync.WaitGroup), pid int, queueSize int, wg *sync.WaitGroup) chan<- interface{} {
