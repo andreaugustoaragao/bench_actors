@@ -43,7 +43,7 @@ func (h *HollywoodActor) Receive(ctx *actor.Context) {
 		atomic.AddInt64(&counter, msg.data)
 		h.processedMsgs++
 	case actor.Stopped:
-		// fmt.Println("actor stopped, processed: ", h.processedMsgs)
+		fmt.Printf("actor %s stopped, processed: %d \n", ctx.PID().ID, h.processedMsgs)
 	}
 }
 
@@ -79,7 +79,7 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 	}
 	actors := make([]*actor.PID, NUMBER_OF_ACTORS)
 	for i := 0; i < NUMBER_OF_ACTORS; i++ {
-		actors[i] = engine.Spawn(newHollywoodActor, strconv.Itoa(i), actor.WithInboxSize(QUEUE_SIZE))
+		actors[i] = engine.Spawn(newHollywoodActor, "test_actor", actor.WithInboxSize(QUEUE_SIZE), actor.WithID(strconv.Itoa(i)))
 	}
 	counter = 0
 	for n := 0; n < b.N; n++ {
