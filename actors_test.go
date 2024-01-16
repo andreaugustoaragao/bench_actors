@@ -67,7 +67,7 @@ func channelActorFunc(ch <-chan interface{}, pid int, wg *sync.WaitGroup) {
 			}()
 		}
 	}
-	fmt.Printf("actor %d stopped, processed: %d\n", pid, msgProcessed)
+	// fmt.Printf("actor %d stopped, processed: %d\n", pid, msgProcessed)
 }
 
 func newHollywoodActor() actor.Receiver {
