@@ -1,0 +1,75 @@
+package agent
+
+import (
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
+
+func BenchmarkChannelCommunication(b *testing.B) {
+	for n := 0; n < b.N; n++ {
+		var counter int64
+		var wg sync.WaitGroup
+
+		// Start 100 goroutines
+		for i := 0; i < 100; i++ {
+			ch := make(chan interface{}, 100)
+			wg.Add(1)
+			go func(ch chan interface{}) {
+				defer wg.Done()
+				for v := range ch {
+					switch a := v.(type) {
+					case int64:
+						atomic.AddInt64(&counter, a)
+					default:
+						return
+					}
+				}
+			}(ch)
+			for i := 0; i < NUMBER_OF_ITEMS; i++ {
+				ch <- int64(1)
+			}
+			ch <- "close"
+		}
+
+		// Wait for all goroutines to complete
+		wg.Wait()
+	}
+}
+
+const NUMBER_OF_ITEMS = 1000000
+
+func BenchmarkMpscCommunication(b *testing.B) {
+	for n := 0; n < b.N; n++ {
+		var counter int64
+		var wg sync.WaitGroup
+
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			q := NewQueue()
+			go func(q *Queue) {
+				defer wg.Done()
+				for {
+					r := q.Pop()
+					if r == nil {
+						runtime.Gosched()
+						continue
+					} else {
+						switch a := r.(type) {
+						case int64:
+							atomic.AddInt64(&counter, a)
+						default:
+							return
+						}
+					}
+				}
+			}(q)
+			for i := 0; i < NUMBER_OF_ITEMS; i++ {
+				q.Push(int64(1))
+			}
+			q.Push("close")
+		}
+		wg.Wait()
+	}
+}

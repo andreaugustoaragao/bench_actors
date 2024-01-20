@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	NUMBER_OF_ITEMS  = 16384
-	NUMBER_OF_ACTORS = 8
+	NUMBER_OF_ITEMS  = 100000
+	NUMBER_OF_ACTORS = 128
 	QUEUE_SIZE       = 128
 	MSG_WITH_WAIT    = 0
 	MSG_WITHOUT_WAIT = 1
 	MSG_CLOSE        = 2
-	WAIT_DURATION    = 5 * time.Microsecond
+	WAIT_DURATION    = 0 * time.Millisecond
 )
 
 var counter int64
@@ -75,8 +75,11 @@ func channelActorFunc(ch <-chan interface{}, pid int, wg *sync.WaitGroup) {
 }
 
 func mpscActorFunc(q *Queue, pid int, wg *sync.WaitGroup) {
+	// runtime.LockOSThread()
+	// defer runtime.UnlockOSThread()
 	defer wg.Done()
 	var msgProcessed int
+free:
 	for {
 		m := q.Pop()
 		if m == nil {
@@ -102,14 +105,14 @@ func mpscActorFunc(q *Queue, pid int, wg *sync.WaitGroup) {
 					return true
 				}()
 				if !shouldContinue {
-					return
+					break free
 				}
 			} else {
 				fmt.Println(reflect.TypeOf(m))
 			}
 		}
 	}
-	// fmt.Printf("actor %d stopped, processed: %d\n", pid, msgProcessed)
+	// fmt.Printf("actor %d stopped, processed: %d \t", pid, msgProcessed)
 }
 
 func newHollywoodActor() actor.Receiver {
@@ -127,6 +130,7 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			actors[i] = engine.Spawn(newHollywoodActor, "test_actor", actor.WithInboxSize(QUEUE_SIZE), actor.WithID(strconv.Itoa(i)))
 		}
+		start := time.Now()
 		for i := 0; i < NUMBER_OF_ITEMS; i++ {
 			uuid := uuid.New().String()
 			actorIndex := consistentHashCRC32(uuid, NUMBER_OF_ACTORS)
@@ -136,12 +140,17 @@ func benchmarkHollywood(b *testing.B, withWait bool) {
 				engine.SendLocal(actors[actorIndex], &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)}, nil)
 			}
 		}
-
+		dur := time.Since(start)
+		b.Log("time to send: ", dur)
 		var actorWg sync.WaitGroup
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			engine.Poison(actors[i], &actorWg)
 		}
 		actorWg.Wait()
+		b.Log("total time to process: ", time.Since(start))
+		if counter != NUMBER_OF_ITEMS {
+			b.Fatal("counter!=NUMBER_OF_ITEMS")
+		}
 		// b.Log("counter_hollywood: ", counter)
 	}
 }
@@ -150,7 +159,7 @@ func BenchmarkHollywoodWithWait(b *testing.B) {
 	benchmarkHollywood(b, true)
 }
 
-func BenchmarkHollywoodWithoutWait(b *testing.B) {
+func benchmarkHollywoodWithoutWait(b *testing.B) {
 	benchmarkHollywood(b, false)
 }
 
@@ -162,6 +171,7 @@ func benchmarkChannels(b *testing.B, withWait bool) {
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			actors[i] = newChannelActor(channelActorFunc, i, QUEUE_SIZE, &wg)
 		}
+		start := time.Now()
 		for i := 0; i < NUMBER_OF_ITEMS; i++ {
 			uuid := uuid.New().String()
 			actorIndex := consistentHashCRC32(uuid, NUMBER_OF_ACTORS)
@@ -171,10 +181,16 @@ func benchmarkChannels(b *testing.B, withWait bool) {
 				actors[actorIndex] <- &Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)}
 			}
 		}
+		dur := time.Since(start)
+		b.Log("time to send: ", dur)
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			close(actors[i])
 		}
 		wg.Wait()
+		b.Log("total time to process: ", time.Since(start))
+		if counter != NUMBER_OF_ITEMS {
+			b.Fatal("counter!=NUMBER_OF_ITEMS")
+		}
 		// b.Log("counter_channels: ", counter)
 	}
 }
@@ -187,6 +203,7 @@ func benchmarkMpscChannels(b *testing.B, withWait bool) {
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			actors[i] = newMpscActor(mpscActorFunc, i, QUEUE_SIZE, &wg)
 		}
+		start := time.Now()
 		for i := 0; i < NUMBER_OF_ITEMS; i++ {
 			uuid := uuid.New().String()
 			actorIndex := consistentHashCRC32(uuid, NUMBER_OF_ACTORS)
@@ -196,10 +213,16 @@ func benchmarkMpscChannels(b *testing.B, withWait bool) {
 				actors[actorIndex].Push(&Message{uuid: uuid, kind: MSG_WITHOUT_WAIT, data: int64(1)})
 			}
 		}
+		dur := time.Since(start)
+		b.Log("time to send: ", dur)
 		for i := 0; i < NUMBER_OF_ACTORS; i++ {
 			actors[i].Push(&Message{uuid: "0", kind: MSG_CLOSE, data: int64(0)})
 		}
 		wg.Wait()
+		b.Log("total time to process: ", time.Since(start))
+		if counter != NUMBER_OF_ITEMS {
+			b.Fatal("counter!=NUMBER_OF_ITEMS")
+		}
 		// b.Log("counter_channels: ", counter)
 	}
 }
@@ -208,7 +231,7 @@ func BenchmarkChannelsWithWait(b *testing.B) {
 	benchmarkChannels(b, true)
 }
 
-func BenchmarkChannelsWithoutWait(b *testing.B) {
+func benchmarkChannelsWithoutWait(b *testing.B) {
 	benchmarkChannels(b, false)
 }
 
@@ -216,7 +239,7 @@ func BenchmarkMpscChannelsWithWait(b *testing.B) {
 	benchmarkMpscChannels(b, true)
 }
 
-func BenchmarkMpscChannelsWithoutWait(b *testing.B) {
+func benchmarkMpscChannelsWithoutWait(b *testing.B) {
 	benchmarkMpscChannels(b, false)
 }
 
